@@ -3,3 +3,4 @@ build
 dist
 prosopopee.egg-info
 prosopopee/prosopopee.egg-info
+.DS_Store

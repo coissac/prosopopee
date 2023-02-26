@@ -45,16 +45,7 @@ parser.add_argument(
 subparser = parser.add_subparsers(dest="cmd")
 subparser.add_parser("build", help="Generate static site")
 subparser.add_parser("test", help="Verify all your yaml data")
-parser_preview = subparser.add_parser("preview", help="Start preview webserver")
-parser_preview.add_argument(
-    "-p",
-    dest="preview_port",
-    metavar="port",
-    help="port for preview webserver",
-    type=int,
-    default=9000,
-)
-
+subparser.add_parser("preview", help="Start preview webserver on port 9000")
 subparser.add_parser("deploy", help="Deploy your website")
 parser_autogen = subparser.add_parser("autogen", help="Generate gallery automaticaly")
 group = parser_autogen.add_mutually_exclusive_group(required=True)
@@ -92,6 +83,7 @@ SETTINGS = {
         "quality": 75,
         "auto-orient": True,
         "strip": True,
+        "trim": False,
         "resize": None,
         "progressive": True,
     },
@@ -321,6 +313,7 @@ class Image:
             "target": target,
             "auto-orient": "-auto-orient" if options["auto-orient"] else "",
             "strip": "-strip" if options["strip"] else "",
+            "trim": "-trim" if options["trim"] else "",
             "quality": "-quality %s" % options["quality"]
             if "quality" in options
             else "-define jpeg:preserve-settings",
@@ -333,7 +326,7 @@ class Image:
         }
 
         command = (
-            "gm convert '{source}' {auto-orient} {strip} {progressive} {quality} {resize} "
+            "gm convert '{source}' {trim} {auto-orient} {strip} {progressive} {quality} {resize} "
             "'{target}'"
         ).format(**gm_switches)
         logging.info("Generation: %s", source)
@@ -631,9 +624,7 @@ def create_cover(gallery_name, gallery_settings, gallery_path):
     return gallery_cover
 
 
-def __build_gallery(
-    settings, gallery_settings, gallery_path, target_gallery_path, template
-):
+def build_gallery(settings, gallery_settings, gallery_path, template):
     gallery_index_template = template.get_template("gallery-index.html")
     page_template = template.get_template("page.html")
 
@@ -661,25 +652,17 @@ def __build_gallery(
         Image=Image,
         Video=Video,
         Audio=Audio,
-        link=target_gallery_path,
+        link=gallery_path,
         name=gallery_path.split("/", 1)[-1],
     ).encode("Utf-8")
 
-    open(Path("build").joinpath(target_gallery_path, "index.html"), "wb").write(html)
+    open(Path("build").joinpath(gallery_path, "index.html"), "wb").write(html)
 
     if gallery_settings.get("password") or settings.get("password"):
         password = gallery_settings.get("password", settings.get("password"))
-        html = encrypt(
-            password, template, target_gallery_path, settings, gallery_settings
-        )
+        html = encrypt(password, template, gallery_path, settings, gallery_settings)
 
-        open(Path("build").joinpath(target_gallery_path, "index.html"), "wb").write(
-            html
-        )
-
-
-def build_gallery(settings, gallery_settings, gallery_path, template):
-    __build_gallery(settings, gallery_settings, gallery_path, gallery_path, template)
+        open(Path("build").joinpath(gallery_path, "index.html"), "wb").write(html)
 
     if not gallery_settings.get("light_mode", False) and (
         not settings["settings"].get("light_mode", False)
@@ -687,15 +670,45 @@ def build_gallery(settings, gallery_settings, gallery_path, template):
     ):
         return
 
+    # XXX shouldn't this be a call to build_gallery?
+    # Build light mode gallery
+    # Prepare light mode
     Path("build").joinpath(gallery_path, "light").makedirs_p()
     gallery_light_path = Path(gallery_path).joinpath("light")
     light_templates = get_gallery_templates(
         "light", gallery_light_path, date_locale=settings["settings"].get("date_locale")
     )
 
-    __build_gallery(
-        settings, gallery_settings, gallery_path, gallery_light_path, light_templates
-    )
+    Image.base_dir = Path(".").joinpath(gallery_path)
+    Image.target_dir = Path(".").joinpath("build", gallery_path)
+
+    Video.base_dir = Path(".").joinpath(gallery_path)
+    Video.target_dir = Path(".").joinpath("build", gallery_path)
+
+    Audio.base_dir = Path(".").joinpath(gallery_path)
+    Audio.target_dir = Path(".").joinpath("build", gallery_path)
+
+    light_template_to_render = light_templates.get_template("gallery-index.html")
+
+    html = light_template_to_render.render(
+        settings=settings,
+        gallery=gallery_settings,
+        Image=Image,
+        Video=Video,
+        Audio=Audio,
+        link=gallery_light_path,
+        name=gallery_path.split("/", 1)[-1],
+    ).encode("Utf-8")
+
+    open(Path("build").joinpath(gallery_light_path, "index.html"), "wb").write(html)
+
+    if gallery_settings.get("password") or settings.get("password"):
+        light_templates.get_template("form.html")
+        html = encrypt(
+            password, light_templates, gallery_light_path, settings, gallery_settings
+        )
+
+        open(Path("build").joinpath(gallery_light_path, "index.html"), "wb").write(html)
 
 
 def build_index(
@@ -780,8 +793,8 @@ def main():
 
         os.chdir("build")
         handler = http.server.SimpleHTTPRequestHandler
-        httpd = TCPServerV4(("", args.preview_port), handler)
-        print(f"Starting server on http://localhost:{args.preview_port}")
+        httpd = TCPServerV4(("", 9000), handler)
+        print("Start server on http://localhost:9000")
         try:
             httpd.serve_forever()
         except (KeyboardInterrupt, SystemExit):
@@ -828,7 +841,6 @@ def main():
     theme = settings["settings"].get("theme", "exposure")
     date_locale = settings["settings"].get("date_locale")
     templates = get_gallery_templates(theme, date_locale=date_locale)
-    templates.add_extension("jinja2.ext.with_")
 
     if Path("custom.js").exists():
         shutil.copy(Path("custom.js"), Path(".").joinpath("build", "", "static", "js"))
